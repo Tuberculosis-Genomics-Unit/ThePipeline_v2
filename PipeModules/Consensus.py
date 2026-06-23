@@ -1,0 +1,552 @@
+#! /usr/bin/env python3.7
+# Copyright (C) 2024 Alvaro Chiner Oms & Miguel Moreno Molina
+
+# This file is part of ThePipeline2
+# ThePipeline2 is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+# ThePipeline2 is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+# You should have received a copy of the GNU General Public License
+# along with ThePipeline2.  If not, see <http://www.gnu.org/licenses/>.
+
+# Module for generating consensus multiFASTA
+
+def generateSNPtable(paths, outfile, sample_list):
+    '''Generate a non redundant list of SNPs, with all the samples of interest
+    The SNPs include information about the gene and are annotated'''
+    import sys
+    import glob
+    import pandas as pd
+    import io
+    import os
+    from .Calling import VCFtoPandas
+    import subprocess as sp
+
+    SNP_table = pd.DataFrame(columns=['Position', 'WT', 'ALT',
+                                          'Gene_start', 'Gene_end', 'Strand',
+                                          'Gene_length', 'Synonym',
+                                          'Rv_number', 'DR_gene',
+                                          'Sanger_annot', 'Essentiality',
+                                          'Annotation', 'Variant_type',
+                                          'Nuc_change', 'AA_change',
+                                          'Position_in_resistant_list'])
+    # Load annotation file
+    with open("/data/ThePipeline_v2/data/H37Rv.annotation_new.tsv".format(
+              os.path.split(
+                os.path.dirname(
+                    os.path.abspath(__file__)))[0]),
+              'r') as f:
+        lines = [li for li in f]
+    Annotation = pd.read_csv(io.StringIO(''.join(lines)), sep='\t')
+
+    # Load catalog of DR mutations
+    catalog = pd.read_csv(
+                "/data/ThePipeline_v2/data/resistance_positions.csv".format(
+                    os.path.split(
+                        os.path.dirname(
+                            os.path.abspath(__file__)))[0]))
+
+    # Read all VCF.annoF files
+    # Similar to old script, concatenate all in positions_total
+    vcf_files = pd.DataFrame()
+    try:
+        sp.run("rm positions_total",
+               shell=True)
+    except:
+        pass
+
+    sp.run('printf "#CHROM\tPOS\tREF\tALT\tVarFreq\tCov_allele\tVarAllele\n" >> positions_total',
+           shell=True)
+
+    if sample_list:
+        files = [x+".EPI.snp.final.annoF" for x in paths]
+        # show error if no annoF files
+        if len(files) < 1:
+            sys.exit("\033[91mERROR: No .annoF "
+                     "files in {} folder\033[0m".format(folder))
+
+        for file in files:
+            sp.run("cat {} | grep -v '#' >>"
+                " positions_total".format(file),
+                shell=True)
+    else:
+        for folder in paths:
+            files = glob.glob("{}/*EPI.snp.final.annoF".format(folder))
+
+            # show error if no annoF files
+            if len(files) < 1:
+                sys.exit("\033[91mERROR: No .annoF "
+                        "files in {} folder\033[0m".format(folder))
+
+            sp.run("cat {}/*EPI.snp.final.annoF | grep -v '#' >>"
+                " positions_total".format(folder),
+                shell=True)
+    
+    # Later, join in a single pandas dataframe
+    vcf_files = VCFtoPandas('positions_total')
+    vcf_files.sort_values('POS', inplace=True)
+    vcf_files.drop_duplicates(subset=["POS", "ALT"], inplace=True)
+    sp.run("rm positions_total", shell=True)
+
+    # Ahora vamos a hacer un DF de pandas a partir de los raw del minos anotados con SnpEff que contengan las posiciones
+    # únicas sacadas de los .annoF
+
+    dfs = []
+
+    if sample_list:
+        snpeff_files = [x+".final_sin_wt.annotSnpEff.vcf" for x in paths]
+        for file in snpeff_files:
+            df = VCFtoPandas(file)
+            dfs.append(df)
+    else:
+        for folder in paths:
+            snpeff_files = glob.glob("{}/*.final_sin_wt.annotSnpEff.vcf".format(folder))
+            for file in snpeff_files: 
+                df = VCFtoPandas(file)
+                dfs.append(df)
+    
+    snpeff_df = pd.concat(dfs, ignore_index=True)
+
+    # Ahora, quitamos las posiciones repetidas
+
+    snpeff_df.sort_values('POS', inplace=True)
+    snpeff_df.drop_duplicates(subset=['POS', 'ALT'], inplace=True)
+    
+
+    # transfer annotation to SNP_table
+    for pos in vcf_files['POS'].unique():
+        
+        # remove the overlap warning
+        overlap = ''
+        # lines in VCF having POS as Position
+        # so we access big dataframe only once
+        try:
+            row = snpeff_df[snpeff_df['POS'] == pos]
+            alt = ','.join(row['ALT'].drop_duplicates().to_list())
+        # handling of biallelic and triallelic sites
+            if row.shape[0] == 1:
+                vtype = row['INFO'].tolist()[0].split('|')[1]
+                n_change = row['INFO'].tolist()[0].split('|')[9]
+                a_change = row['INFO'].tolist()[0].split('|')[10]
+            elif row.shape[0] == 2:
+                vtype = ','.join([row['INFO'].tolist()[0].split('|')[1],
+                                  row['INFO'].tolist()[1].split('|')[1]])
+                n_change = ','.join([row['INFO'].tolist()[0].split('|')[9],
+                                     row['INFO'].tolist()[1].split('|')[9]])
+                a_change = ','.join([row['INFO'].tolist()[0].split('|')[10],
+                                     row['INFO'].tolist()[1].split('|')[10]])
+            elif row.shape[0] == 3:
+                vtype = ','.join([row['INFO'].tolist()[0].split('|')[1],
+                                  row['INFO'].tolist()[1].split('|')[1],
+                                  row['INFO'].tolist()[2].split('|')[1]])
+                n_change = ','.join([row['INFO'].tolist()[0].split('|')[9],
+                                     row['INFO'].tolist()[1].split('|')[9],
+                                     row['INFO'].tolist()[2].split('|')[9]])
+                a_change = ','.join([row['INFO'].tolist()[0].split('|')[10],
+                                     row['INFO'].tolist()[1].split('|')[10],
+                                     row['INFO'].tolist()[2].split('|')[10]])
+
+            Rv = row['INFO'].tolist()[0].split('|')[3]
+            anno_row = Annotation[(Annotation['Start'] <= pos)
+                                  & (Annotation['End'] >= pos)]
+            if anno_row.shape[0] > 1:
+                # If this position falls in two genes (overlaps)
+                # put info about the gene used in the snpEff
+                # and put an 'overlap' warning in the Rv field
+                anno_row = anno_row[anno_row['Synonym'] == Rv]
+                overlap = '+OL'
+
+        except:
+            print('\033[93mWARNING: It seems that'
+                  ' position {} had not been annotated.\033[0m'.format(pos))
+            vtype = ''
+            n_change = ''
+            a_change = ''
+            anno_row = Annotation[(Annotation['Start'] <= pos)
+                                  & (Annotation['End'] >= pos)]
+            # If no annotation in the position
+            # and if this position falls in two genes (overlaps)
+            # then just put info about the first gene in the annotation
+            # but put an 'overlap' warning in the Rv field
+            if anno_row.shape[0] > 1:
+                Rv = anno_row['Synonym'].iloc[0]
+                anno_row = anno_row[anno_row['Synonym'] == Rv]
+                overlap = '+OL'
+            else:
+                Rv = anno_row['Synonym'].item()
+
+        # Remove annot for IG
+        if 'IG' in Rv:
+            vtype = ''
+            n_change = ''
+            a_change = ''
+
+        # Potential DR gene? Check if not 'nan' and if 'DR-' is in field
+        DR_gene = anno_row['Possible.DR.phage.PEPPE.'].item()
+        if (DR_gene == DR_gene) and (
+           'DR-' in anno_row['Possible.DR.phage.PEPPE.'].item()):
+            DR_gene = anno_row['Possible.DR.phage.PEPPE.'].item()
+        else:
+            DR_gene = ''
+
+        # Potential DR position?
+        if pos in catalog['Position'].tolist():
+            res_pos = 'TRUE'
+        else:
+            res_pos = ''
+
+        # write all info in the form of a table
+        SNP_table = SNP_table.append(
+                    pd.DataFrame(
+                        {'Position': pos,
+                         'WT': row['REF'].drop_duplicates().item(),
+                         'ALT': alt,
+                         'Gene_start': anno_row['Start'].item(),
+                         'Gene_end': anno_row['End'].item(),
+                         'Strand': anno_row['Strand'].item(),
+                         'Gene_length': anno_row['Length'].item(),
+                         'Synonym': anno_row['Gene'].item(),
+                         'Rv_number': Rv + overlap,
+                         'DR_gene': DR_gene,
+                         'Sanger_annot': anno_row['sanger_anot'].item(),
+                         'Essentiality': anno_row['essential.'].item(),
+                         'Annotation': anno_row['Annotation'].item(),
+                         'Variant_type': vtype,
+                         'Nuc_change': n_change.replace('c.', ''),
+                         'AA_change': a_change.replace('p.', ''),
+                         'Position_in_resistant_list': res_pos},
+                        index=[0]))
+
+    SNP_table.to_csv("{}.SNP_table.txt".format(outfile), sep="\t", index=False)
+    SNP_table.index = range(0, SNP_table.shape[0], 1)
+    return SNP_table
+
+
+
+def allFASTAS(table, paths, threads, sample_list):
+    '''Generate all consensus fasta of all the samples
+    in the analysis folders. Paralelized'''
+    import glob
+    import multiprocessing as mp
+
+    # set the number of cores to use
+    pool = mp.Pool(threads)
+
+    if sample_list:
+        prefixes = [x for x in paths]
+        [pool.apply_async(generateFASTA,
+                          args=(table, prefix)) for prefix in prefixes]
+
+    else:
+        for folder in paths:
+            # Only work with samples having annoF vcfs, as were the ones
+            # used to generate de SNP table
+            annoF_files = glob.glob("{}/*.EPI.snp.final.annoF".format(folder))
+            prefixes = [s.replace('.EPI.snp.final.annoF', '') for s in annoF_files]
+            #print(annoF_files)
+            #print(prefixes)
+            # run in parallel for each folder
+            [pool.apply_async(generateFASTA,
+                            args=(table, prefix)) for prefix in prefixes]
+    pool.close()
+    pool.join()
+
+
+def generateFASTA(table, prefix):
+    import pandas as pd
+    '''Generate the consensus fasta of a sample'''
+    from .Calling import VCFtoPandas
+    
+    # positions to evaluate
+    pos = table['Position'].to_list()
+    
+    # load wt.txt, .snp.vcf, .indel.vcf and .vcf
+    wt_file = pd.read_csv("{}.wt".format(prefix), sep="\t")
+    indel_file = VCFtoPandas("{}.indel.vcf".format(prefix))
+    snp_file = pd.read_csv("{}.snp.minos".format(prefix), sep="\t", header=0)
+    lowcov_file = pd.read_csv("{}.lowcov".format(prefix), sep="\t", header=0)
+    # keep only deletions (>1 in REF)
+    # and add a new colum with the range of the deletion
+    # in .indel.vcf
+    indel_file = indel_file[indel_file['REF'].apply(len) > 1]
+    indel_file['TO'] = indel_file['POS'] + indel_file['REF'].apply(len)
+    # Convert indel ranges to a list of tuples for faster checking
+    indel_ranges = list(zip(indel_file['POS'], indel_file['TO']))
+
+    # Create a dictionary for each file for faster lookups
+    snp_dict = snp_file.set_index('Position')['Cons'].to_dict()
+    wt_set = set(wt_file['Position'].to_list())
+    lowcov_set = set(lowcov_file['Position'].to_list())
+
+    # Creamos la lista que será nuestro fasta para la muestra que estemos iterando
+    fasta_seq = table['WT'].to_list()
+
+    def is_in_indel_ranges(position, ranges):
+        for start, end in ranges:
+            if start < position < end:
+                return True
+        return False
+    
+    # Para cada posición en la SNP_table
+
+    for i, p in enumerate(pos):
+        if p in snp_dict:
+            fasta_seq[i] = snp_dict[p]
+        elif p in wt_set:
+            continue
+        elif is_in_indel_ranges(p, indel_ranges):
+            fasta_seq[i] = "-"
+        elif p in lowcov_set:
+            fasta_seq[i] = "N"
+        else:
+            fasta_seq[i] = "?"
+
+    # write FASTA
+    write_fasta(''.join(fasta_seq), prefix)
+
+
+def write_fasta(seq, id, wrap=80):
+    """Write sequences to a fasta file.
+
+    Parameters
+    ----------
+    seq : str
+        nucleotide sequence
+    id : str
+        Prefix for naming the fasta file.
+    wrap: int
+        Number of AA/NT before the line is wrapped.
+    """
+    import os
+
+    with open('{}.fas'.format(id), 'w') as f:
+        f.write('>{}\n'.format(os.path.basename(id)))
+        for i in range(0, len(seq), wrap):
+            f.write('{}\n'.format(seq[i:i + wrap]))
+    f.close()
+
+
+def fasta_iter(fasta_name):
+    """
+    modified from Brent Pedersen
+    Correct Way To Parse A Fasta File In Python
+    given a fasta file. yield tuples of header, sequence
+    https://www.biostars.org/p/710/
+    """
+    from itertools import groupby
+
+    fh = open(fasta_name)
+
+    # ditch the boolean (x[0]) and just keep the header or sequence since
+    # we know they alternate.
+    faiter = (x[1] for x in groupby(fh, lambda line: line[0] == ">"))
+
+    for header in faiter:
+        # drop the ">"
+        headerStr = header.__next__()[1:].strip()
+
+        # join all sequence lines to one.
+        seq = "".join(s.strip() for s in faiter.__next__())
+
+        yield (headerStr, seq)
+
+
+def multifastas(table, outfile, snpsites, paths, sample_list):
+    '''Module for performing some useful operations
+    over the multifasta'''
+    import subprocess as sp
+    import pandas
+    import io
+
+    # First, generate the multifasta file
+
+    if sample_list:
+        for file in paths:
+           sp.run("cat {}*.fas >> {}.mf.fasta".format(file,outfile),
+            shell=True, capture_output=True)
+    else:
+        for folder in paths:
+            sp.run("cat {}/*.fas >> {}.mf.fasta".format(folder,outfile),
+                shell=True, capture_output=True)
+        
+    # Later the gapped alignment
+    sp.run("cat {}.mf.fasta | sed '/^>/! s/[^ACGTacgt]/-/g' >"
+           " {}.mf_gap.fasta".format(outfile, outfile),
+           shell=True, capture_output=True)
+    
+    # run snp-sites and obtain the associated FASTA
+    cmd_fastasnpsites = [snpsites,
+                         "-o",
+                         "{}.mf_gap.snp-sites.fasta".format(outfile),
+                         "{}.mf_gap.fasta".format(outfile)]
+    sp.call(cmd_fastasnpsites)
+    
+    # run snp-sites and obtain the associated VCF
+    cmd_vcfsnpsites = [snpsites, "-v",
+                       "{}.mf_gap.fasta".format(outfile)]
+    sites = sp.Popen(cmd_vcfsnpsites, stdout=sp.PIPE)
+    vcf = pandas.read_csv(io.StringIO(sites.stdout.read().decode()),
+                          header=3,
+                          usecols=[1, 3, 4],
+                          sep='\t')
+    sites.stdout.close()
+    
+    # detect 'jumps' in the VCF. These will be the removed positions
+    missing = [x for x in range(1, vcf['POS'].iloc[-1])
+               if x not in vcf['POS'].tolist()]
+    missing = [x - 1 for x in missing]
+
+    # generate a new SNP_table, without these removed positions
+    table_snpsites = table.drop(missing, axis=0)
+    table_snpsites.index = range(0, table_snpsites.shape[0], 1)
+    table_snpsites.to_csv("{}.SNP_table.snp-sites.txt".format(outfile),
+                          sep="\t", index=False)
+    
+    # identify resistance-confering positions in snp-sites SNP_table
+    res_pos = table_snpsites[
+              table_snpsites['Position_in_resistant_list'] == 'TRUE'].index.tolist()
+
+    # read the snp-sites FASTA
+    fasta_snpsites = fasta_iter("{}.mf_gap.snp-sites.fasta".format(outfile))
+    # create new fasta
+    f = open('{}.mf_gap.snp-sites.no-resis.fasta'.format(outfile), 'w')
+    # remove resis positions and write fasta
+    for header, seq in fasta_snpsites:
+        count = 0
+        for remove_pos in res_pos:
+            remove_pos = remove_pos - count
+            seq = seq[:remove_pos] + seq[remove_pos+1:]
+            count += 1
+        f.write('>{}\n'.format(header))
+        f.write('{}\n'.format(seq))
+    f.close()
+    
+    # finally, generates a new SNP_table, without the removed positions
+    table_snpsites_nr = table_snpsites.drop(res_pos, axis=0)
+    table_snpsites_nr.index = range(0, table_snpsites_nr.shape[0], 1)
+    table_snpsites_nr.to_csv("{}.SNP_table.snp-sites.no-resis.txt".format(
+                             outfile),
+                             sep="\t", index=False)
+
+    # calculate the invariants
+    A = 758359 - table_snpsites_nr[table_snpsites_nr['WT'] == 'A'].shape[0]
+    G = 1444793 - table_snpsites_nr[table_snpsites_nr['WT'] == 'G'].shape[0]
+    T = 758224 - table_snpsites_nr[table_snpsites_nr['WT'] == 'T'].shape[0]
+    C = 1450156 - table_snpsites_nr[table_snpsites_nr['WT'] == 'C'].shape[0]
+
+    # write to file
+    with open('{}_invariants.txt'.format(outfile), 'w') as f:
+        f.write("##Number of invariant sites for "
+                "{}.mf_gap.snp-sites.no-resis.fasta\n".format(outfile))
+        f.write("##A,C,G,T\n")
+        f.write("{},{},{},{}\n".format(A, C, G, T))
+    f.close()
+
+
+def Consensus(args):
+    import os
+    import sys
+    from .Repository import Programs
+    import datetime
+    import subprocess as sp
+
+    paths = []
+    programs = Programs()
+
+    # if not prefix defined, use current date
+    if not args.outfile:
+        e = datetime.datetime.now()
+        args.outfile = e.strftime("%Y%m%d")
+
+    snpsites = "/data/ThePipeline_v2/Programs/snp-sites/src/snp-sites"
+
+    # Check if the input is a list or a path
+    if args.sample_list:
+        with open(args.paths[0], "r+") as input_file:
+            for line in input_file:
+                paths.append(line.strip())
+
+        try:
+            print("\033[92m\nCreating SNP table\n\033[00m")
+            table = generateSNPtable(paths, args.outfile, args.sample_list)
+            print("Non redundant SNP list with"
+                " associated information saved in"
+                " {}.SNP_table.txt".format(args.outfile))
+        except Exception as e:
+            print(e)
+            sys.exit("\033[91mERROR: Something failed "
+                    "when generating the SNP table."
+                    " Check that .annoF files are present in the"
+                    " folder and that all of them are annotated.\033[0m")
+    else:    
+    # Check that paths are correct
+        for f in args.paths:
+            if os.path.exists(os.path.abspath(f)):
+                paths.append(os.path.abspath(f))
+            else:
+                sys.exit("\033[91mERROR:{} path does not exists.\033[0m".format(f))
+        try:
+            print("\033[92m\nCreating SNP table\n\033[00m")
+            table = generateSNPtable(paths, args.outfile, args.sample_list)
+            print("Non redundant SNP list with"
+                " associated information saved in"
+                " {}.SNP_table.txt".format(args.outfile))
+        except Exception as e:
+            print(e)
+            sys.exit("\033[91mERROR: Something failed "
+                    "when generating the SNP table."
+                    " Check that .annoF files are present in the"
+                    " folder and that all of them are annotated.\033[0m")
+
+    # Generates one consensus for each sample
+    try:
+        print("\033[92m\nGenerating individual fastas\n\033[00m")
+        allFASTAS(table, paths, args.threads, args.sample_list)
+        print("Individual fasta files generated")
+    except:
+        for folder in paths:
+            sp.run("rm {}/*.fas".format(folder),
+                shell=True, capture_output=True)
+
+        if args.sample_list:
+            prefixes = [x for x in paths]
+            for prefix_to_remove in prefixes:
+                sp.run("rm {}.fas".format(prefix_to_remove),shell=True,capture_output=True)
+
+        sys.exit("\033[91mERROR: Something went wrong when"
+                 " generating the individual FASTAs"
+                 " in parallel.\033[0m")
+
+    # Generates several multifastas and information associated
+    try:
+        print("\033[92m\nGenerating multifasta files\n\033[00m")
+        multifastas(table, args.outfile, snpsites, paths, args.sample_list)
+        print("Multifasta files generated")
+    except:
+        for folder in paths:
+            sp.run("rm {}/*.fas".format(folder),
+                shell=True, capture_output=True)
+
+        if args.sample_list:
+            prefixes = [x for x in paths]
+            for prefix_to_remove in prefixes:
+                sp.run("rm {}.fas".format(prefix_to_remove),shell=True,capture_output=True)
+        sys.exit("\033[91mERROR: Something went wrong when"
+                 " performing the snp-sites step.\033[0m")
+
+    sp.run("rm *.fas", shell=True, capture_output=True)
+
+    # Remove individual fasta files
+
+    for folder in paths:
+        sp.run("rm {}/*.fas".format(folder),
+            shell=True, capture_output=True)
+    
+    if args.sample_list:
+        prefixes = [x for x in paths]
+        for prefix_to_remove in prefixes:
+            sp.run("rm {}.fas".format(prefix_to_remove),shell=True,capture_output=True)
