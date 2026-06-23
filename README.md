@@ -1,6 +1,6 @@
-# ThePipeline v.2.0 (ThePipeline2)
+# ThePipeline v.2.2 (ThePipeline2)
 
-- [ThePipeline v.2.0 (ThePipeline2)](#thepipeline-v20-thepipeline2)
+- [ThePipeline v.2.2 (ThePipeline2)](#thepipeline-v20-thepipeline2)
     - [About](#about)
     - [Dependencies](#dependencies)
     - [Structure](#structure)
