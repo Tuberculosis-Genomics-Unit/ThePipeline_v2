@@ -877,7 +877,7 @@ def get_DR(prefix):
 
                 for line_ in line_split:
                 # Solo mantenemos las posiciones con una freq mayor de 5% y una profundidad mayor de 6
-                    if float(line_[4]) < 5 and float(line_[5]) < 6:
+                    if float(line_[4]) < 5 or float(line_[5]) < 6:
                         continue
                     if line_[3] in ["M", "R", "W", "S", "Y", "K"]:
                         line_ = correct_line(line_)      
@@ -892,7 +892,7 @@ def get_DR(prefix):
                         output.append(line_)
             
             else:
-                if float(line[4]) < 5 and float(line[5]) < 6:
+                if float(line[4]) < 5 or float(line[5]) < 6:
                     continue
                 if line[3] in ["M", "R", "W", "S", "Y", "K"]:
                     line = correct_line(line)      
